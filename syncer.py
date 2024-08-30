@@ -7,6 +7,7 @@ import curses
 import xmlrpc.client
 import time
 import colorlog
+import re
 
 # Configure colorlog
 handler = colorlog.StreamHandler()
@@ -20,15 +21,22 @@ handler.setFormatter(colorlog.ColoredFormatter(
         'CRITICAL': 'red,bg_white',
     }
 ))
-logger = colorlog.getLogger()
-logger.addHandler(handler)
-logger.setLevel(colorlog.DEBUG)
-
-DEVELOPMENT = False
 
 def load_config(file_path):
     with open(file_path, 'r') as file:
         return yaml.safe_load(file)
+
+logger = colorlog.getLogger()
+logger.addHandler(handler)
+config = load_config('config.yaml')
+log_level = config.get('logging', {}).get('severity', 'DEBUG').upper()
+logger.setLevel(log_level)
+
+# logger.setLevel(colorlog.DEBUG)
+
+# DEVELOPMENT = True
+
+
     
 def human_readable_size(size, decimal_places=2):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -40,18 +48,39 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
     """
     Downloads a file from the FTP server to a temporary location, then moves it to the final destination.
     """
+    padded_name = os.path.basename(remote_path)
+    if len(padded_name) > 60:
+        padded_name = f"{padded_name[:20]}...{padded_name[-40:]}"
+    padded_name = padded_name.ljust(70)
+
     if not os.path.exists(local_path) or overwrite:
-        logger.info(f"Downloading file {remote_path} to {temp_path}")
+        logger.debug(f"Downloading file {remote_path} to {temp_path}")
         temp_dir_path = os.path.dirname(temp_path)
         if not os.path.exists(temp_dir_path):
             os.makedirs(temp_dir_path)
-            logger.info(f"Created directory: {temp_dir_path}")
+            logger.debug(f"Created directory: {temp_dir_path}")
+        
+        
+
 
         with ftp_host.open(remote_path, 'rb') as remote_file:
             file_size = ftp_host.path.getsize(remote_path)
-            if DEVELOPMENT and file_size > 100000000:
-                logger.warning(f"DEVELOPMENT: Skipping {remote_path} because it is too big")
+           
+            if file_size > config['rules']['max_file_size']:
+                logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
                 return
+            if file_size < config['rules']['min_file_size']:
+                logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
+                return
+            if any(re.match(pattern, remote_path) for pattern in config['rules']['skip_regex']):
+                logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
+                return
+            if any(remote_path.endswith(ext) for ext in config['rules']['skip_extensions']):
+                logger.warning(f"\t- {padded_name} [SKIPPED: extension]")
+                return
+
+            logger.info(f"\t+ {padded_name} [OK]")
+
             start_time = time.time()      
             with open(temp_path, 'wb') as local_file:
                 downloaded = 0
@@ -78,17 +107,20 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
                     
                     status = f"Downloaded {human_readable_downloaded}/{human_readable_file_size} ({percentage:.2f}%) ETA: {human_readable_eta}"
                     print(f"{status}{' ' * 20}", end="\r", flush=True)
-            logger.info()
             # print(f"Rename {temp_path} to {local_path}")
+            print(f"{' ' * 60}", end="\r", flush=True)
             # Move the file from temp to final location
             local_dir_path = os.path.dirname(local_path)
             if not os.path.exists(local_dir_path):
                 os.makedirs(local_dir_path)
-                logger.info(f"Created directory: {local_dir_path}")
+                logger.debug(f"Created directory: {local_dir_path}")
             os.rename(temp_path, local_path)
-            logger.info(f"Moved to: {local_path}")
+            logger.debug(f"Moved to: {local_path}")
+
     else:
-        logger.info(f"Already exists: {local_path}")
+        logger.debug(f"Already exists: {local_path}")
+        logger.info(f"\t+ {padded_name} [EXISTS]")
+
 
 def mirror_ftp_directory(host, user, password, remote_dir, local_dir, temp_dir, overwrite=False):
     """
@@ -96,16 +128,14 @@ def mirror_ftp_directory(host, user, password, remote_dir, local_dir, temp_dir, 
     """
     with ftputil.FTPHost(host, user, password) as ftp_host:
         def download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir):
- 
-            # print(f"Checking if {remote_dir} is a directory")
             try:
-                pprint(ftp_host.listdir(remote_dir))
+                dirs = ftp_host.listdir(remote_dir)
+                logger.debug(f"Found {len(dirs)} items in {remote_dir}")
                 is_directory = True
             except ftputil.error.PermanentError:
                 is_directory = False
 
             if is_directory:
-                # print(f"Directory: {remote_dir}")
                 for item in ftp_host.listdir(remote_dir):
                     remote_path = ftp_host.path.join(remote_dir, item)
                     local_path = os.path.join(local_dir, item)
@@ -128,7 +158,7 @@ def mirror_ftp_directory(host, user, password, remote_dir, local_dir, temp_dir, 
         download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir)
 
 def syncer_download(source, destination):
-    logger.info(f"Downloading {source} to {destination} via FTPS")
+    # logger.info(f"Downloading {source} to {destination}")
     ftp_config = load_config('config.yaml')['ftp']
     temp_dir = load_config('config.yaml')['folders']['temp']
     mirror_ftp_directory(ftp_config['host'], ftp_config['user'], ftp_config['pass'], source, destination, temp_dir)
@@ -193,29 +223,28 @@ def main():
     for torrent_dict in torrents:
         logger.info(f"[{torrent_dict['label']:<15}] {torrent_dict['name']}")
 
-    logger.info("Downloading")
     for torrent_dict in torrents:
-        # print(f"[{torrent_dict['label']:<15}] {torrent_dict['name']}")
-
         if torrent_dict['label'] != completed_label:
             if torrent_dict['label'] in labels:
                 if torrent_dict['is_completed']:
+                    logger.info("-" * 100)
                     destination = config['folders']['root'] + labels[torrent_dict['label']] + torrent_dict['name']
-                    logger.info(f"[{torrent_dict['label']}] {torrent_dict['name']}")
+                    logger.info(f"=> {torrent_dict['name']} ({torrent_dict['label']})")
                     is_dir = torrent_dict['name'] in torrent_dict['directory']
                     if is_dir is False:
                         source_directory = torrent_dict['directory'] + "/" + torrent_dict['name']
                     else:
                         source_directory = torrent_dict['directory']    
                     
-                    logger.info(f"{source_directory} => {destination}")
-                    logger.info("----------------------------------------")
+                    # logger.info(f"{source_directory} => {destination}")
                     if not args.dry_run:
                         syncer_download(source_directory, destination)
-                        if change_label == True:
-                            server.d.custom1.set(torrent, "tmp_" + completed_label)
-                        else:
-                            logger.warning("Skipping setting label")
-                    logger.info("----------------------------------------")
+                        if change_label:
+                            if 'server' in locals():
+                                server.d.custom1.set(torrent, "tmp_" + completed_label)
+                            else:
+                                logger.error("\t- Cannot set label when caching is on")
+                        else:   
+                            logger.warning("\t- Skipping setting label")
 if __name__ == "__main__":
     main()
