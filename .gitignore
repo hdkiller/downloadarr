@@ -1,0 +1,8 @@
+Downloads/
+Incomplete_Downloads/
+.venv/
+__pycache__/
+.vscode/
+.DS_Store
+config.yaml
+
