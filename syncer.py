@@ -8,6 +8,17 @@ import xmlrpc.client
 import time
 import colorlog
 import re
+import pickle
+
+# TODO: Sort by label or priority
+# TODO: Trigger import after download
+# TODO: Continue download if interrupted
+# TODO: Unarchive automatically and remove archives
+# TODO: Webhook for external scripts
+# TODO: Docker support
+# TODO: Handle root/temp folder permissions
+# TODO: Handle incomplete downloads
+# TODO: Handle error setting label and better error handling in general
 
 # Configure colorlog
 handler = colorlog.StreamHandler()
@@ -22,6 +33,9 @@ handler.setFormatter(colorlog.ColoredFormatter(
     }
 ))
 
+from arrapi import SonarrAPI
+from arrapi import RadarrAPI
+
 def load_config(file_path):
     with open(file_path, 'r') as file:
         return yaml.safe_load(file)
@@ -32,12 +46,18 @@ config = load_config('config.yaml')
 log_level = config.get('logging', {}).get('severity', 'DEBUG').upper()
 logger.setLevel(log_level)
 
-# logger.setLevel(colorlog.DEBUG)
 
-# DEVELOPMENT = True
+# sonarr = SonarrAPI(config['sonarr']['baseurl'], config['sonarr']['api_key'])
+# radarr = RadarrAPI(config['radarr']['baseurl'], config['radarr']['api_key'])
 
+# pprint(sonarr.send_command("DownloadedEpisodesScan",path="/media/Public/Downloads/Shows/"))
+# pprint(sonarr.all_commands())
 
-    
+# print("-" * 100)
+# pprint(radarr.send_command("DownloadedMoviesScan",path="/media/Public/Downloads/Movies/Despicable.Me.4.2024.DV.2160p.WEB.h265-ETHEL"))
+# pprint(radarr.all_commands())
+# exit(1)
+
 def human_readable_size(size, decimal_places=2):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size < 1024.0:
@@ -183,14 +203,21 @@ def main():
 
     logger.info("Connecting to {}".format(server_url.replace(rtorrent_config['pass'], '***')))
 
-    import pickle
+    allow_xmlrpc_cache = config['rtorrent'].get('allow_xmlrpc_cache', False)
+    
     cache_file = 'torrents_cache.pkl'
-
-    try:
-        with open(cache_file, 'rb') as f:
-            torrents = pickle.load(f)
-        logger.warning(f"Loaded {len(torrents)} torrents from cache")
-    except (FileNotFoundError, EOFError):
+    
+    if allow_xmlrpc_cache:
+        try:
+            with open(cache_file, 'rb') as f:
+                torrents = pickle.load(f)
+            logger.warning(f"Loaded {len(torrents)} torrents from cache")
+        except (FileNotFoundError, EOFError):
+            torrents = []
+    else:
+        torrents = []
+    
+    if len(torrents) == 0:
         try:
             server = xmlrpc.client.Server(server_url)
             mainview = server.download_list("", "main")
@@ -210,18 +237,23 @@ def main():
                 torrent_dict['hash'] = server.d.hash(torrent)
                 
                 torrents.append(torrent_dict)
-            
-            with open(cache_file, 'wb') as f:
-                pickle.dump(torrents, f)
-            logger.info(f"Saved {len(torrents)} torrents to cache")
+
+            if allow_xmlrpc_cache:
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(torrents, f)
+                logger.info(f"Saved {len(torrents)} torrents to cache")
             print("\r" + " " * 100, end="\r")  # Clear the line
         except Exception as e:
             logger.error(f"An error occurred while connecting to the XMLRPC server: {e}")
     
+    # Sort torrents by label
     torrents.sort(key=lambda x: x['label'])
 
     for torrent_dict in torrents:
-        logger.info(f"[{torrent_dict['label']:<15}] {torrent_dict['name']}")
+        if torrent_dict['is_completed']:
+            logger.info(f"[{torrent_dict['label']:<15}] {torrent_dict['name']}")
+        else:
+            logger.warning(f"[{torrent_dict['label']:<14}*] {torrent_dict['name']}")
 
     for torrent_dict in torrents:
         if torrent_dict['label'] != completed_label:
@@ -239,12 +271,14 @@ def main():
                     # logger.info(f"{source_directory} => {destination}")
                     if not args.dry_run:
                         syncer_download(source_directory, destination)
+                        
                         if change_label:
                             if 'server' in locals():
-                                server.d.custom1.set(torrent, "tmp_" + completed_label)
+                                logger.info(f"\t= Setting label on {torrent_dict['name']}")
+                                server.d.custom1.set(torrent_dict['id'], completed_label)
                             else:
-                                logger.error("\t- Cannot set label when caching is on")
+                                logger.error("\t= Cannot set label when caching is on")
                         else:   
-                            logger.warning("\t- Skipping setting label")
+                            logger.warning("\t= Skipping setting label")
 if __name__ == "__main__":
     main()
