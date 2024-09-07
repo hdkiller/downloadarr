@@ -365,31 +365,6 @@ def main():
     global args
     global pid_file
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Simulate the download process without actually downloading or changing labels",
-    )
-    parser.add_argument(
-        "--one-shot",
-        action="store_true",
-        help="Run the script only once without looping",
-    )
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
-    parser.add_argument("--skip-extensions", type=str, help="Comma-separated list of file extensions to skip")
-    parser.add_argument("--dont-change-label", action="store_true", help="Don't change the label of the torrents when download completes")
-    parser.add_argument("--min-file-size", type=int, help="Minimum file size to download (in bytes)")
-    parser.add_argument("--max-file-size", type=int, help="Maximum file size to download (in bytes)")
-    parser.add_argument("--skip-regex", type=str, help="Comma-separated list of regex patterns to skip")
-    parser.add_argument("--allow-multiple-instances", action="store_true", help="Allow multiple instances of the script to run")
-    parser.add_argument("--pid-file", type=str, default="/tmp/downloadarr.pid", help="Path to the PID file")
-    parser.add_argument("--pid-file", type=str, default="/tmp/downloadarr.pid", help="Path to the PID file")
-    args = parser.parse_args()
-
-    pid_file = args.pid_file
-
     if not args.allow_multiple_instances:
         if os.path.exists(pid_file):
             with open(pid_file, "r") as f:
@@ -601,6 +576,31 @@ def main():
 
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate the download process without actually downloading or changing labels",
+    )
+    parser.add_argument(
+        "--one-shot",
+        action="store_true",
+        help="Run the script only once without looping",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
+    parser.add_argument("--skip-extensions", type=str, help="Comma-separated list of file extensions to skip")
+    parser.add_argument("--dont-change-label", action="store_true", help="Don't change the label of the torrents when download completes")
+    parser.add_argument("--min-file-size", type=int, help="Minimum file size to download (in bytes)")
+    parser.add_argument("--max-file-size", type=int, help="Maximum file size to download (in bytes)")
+    parser.add_argument("--skip-regex", type=str, help="Comma-separated list of regex patterns to skip")
+    parser.add_argument("--allow-multiple-instances", action="store_true", default=False, help="Allow multiple instances of the script to run")
+    parser.add_argument("--pid-file", type=str, default="/tmp/downloadarr.pid", help="Path to the PID file")
+    args = parser.parse_args()
+
+    pid_file = args.pid_file
+    
     try:
         main()
     finally:
