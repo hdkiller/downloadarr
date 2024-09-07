@@ -375,12 +375,27 @@ def main():
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
+    parser.add_argument("--allow-multiple-instances", action="store_true", help="Allow multiple instances of the script to run")
     parser.add_argument("--skip-extensions", type=str, help="Comma-separated list of file extensions to skip")
     parser.add_argument("--dont-change-label", action="store_true", help="Don't change the label of the torrents when download completes")
     parser.add_argument("--min-file-size", type=int, help="Minimum file size to download (in bytes)")
     parser.add_argument("--max-file-size", type=int, help="Maximum file size to download (in bytes)")
     parser.add_argument("--skip-regex", type=str, help="Comma-separated list of regex patterns to skip")
+    parser.add_argument("--allow-multiple-instances", action="store_true", help="Allow multiple instances of the script to run")
     args = parser.parse_args()
+
+    pid_file = "/tmp/downloadarr.pid"
+
+    if not args.allow_multiple_instances:
+        if os.path.exists(pid_file):
+            with open(pid_file, "r") as f:
+                old_pid = f.read().strip()
+            if old_pid and os.path.exists(f"/proc/{old_pid}"):
+                print(f"Script is already running with PID {old_pid}. Exiting.")
+                sys.exit(1)
+
+        with open(pid_file, "w") as f:
+            f.write(str(os.getpid()))
     while True:
         if os.path.exists(args.config):
             config = load_config(args.config)
@@ -582,4 +597,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        if not args.allow_multiple_instances and os.path.exists(pid_file):
+            os.remove(pid_file)
