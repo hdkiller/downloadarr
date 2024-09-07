@@ -8,3 +8,4 @@ config.yaml
 deploy.sh
 tmp/
 run-install.sh
+torrents_cache.pkl
