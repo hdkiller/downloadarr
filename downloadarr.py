@@ -36,6 +36,15 @@ handler.setFormatter(
 
 
 def load_config(file_path):
+    """
+    Load the YAML configuration file.
+
+    Args:
+        file_path (str): Path to the configuration file.
+
+    Returns:
+        dict: Configuration data.
+    """
     with open(file_path, "r") as file:
         return yaml.safe_load(file)
 
@@ -60,6 +69,16 @@ sonarr = SonarrAPI(config["sonarr"]["baseurl"], config["sonarr"]["api_key"])
 
 
 def human_readable_size(size, decimal_places=2):
+    """
+    Convert a size in bytes to a human-readable format.
+
+    Args:
+        size (int): Size in bytes.
+        decimal_places (int): Number of decimal places for formatting.
+
+    Returns:
+        str: Human-readable size.
+    """
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size < 1024.0:
             return f"{size:.{decimal_places}f} {unit}"
@@ -67,6 +86,19 @@ def human_readable_size(size, decimal_places=2):
 
 
 def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=False):
+    """
+    Download a file from the FTP server to a temporary location, then move it to the final destination.
+
+    Args:
+        ftp_host (ftputil.FTPHost): FTP host object.
+        remote_path (str): Path to the remote file.
+        local_path (str): Path to the local file.
+        temp_path (str): Path to the temporary file.
+        overwrite (bool): Whether to overwrite the existing file.
+
+    Returns:
+        None
+    """
     """
     Downloads a file from the FTP server to a temporary location, then moves it to the final destination.
     """
@@ -157,6 +189,21 @@ def mirror_ftp_directory(
     host, user, password, remote_dir, local_dir, temp_dir, overwrite=False
 ):
     """
+    Mirror an FTP directory tree to a local directory via a temporary directory.
+
+    Args:
+        host (str): FTP host.
+        user (str): FTP username.
+        password (str): FTP password.
+        remote_dir (str): Remote directory path.
+        local_dir (str): Local directory path.
+        temp_dir (str): Temporary directory path.
+        overwrite (bool): Whether to overwrite existing files.
+
+    Returns:
+        None
+    """
+    """
     Mirrors an FTP directory tree to a local directory via a temporary directory.
     """
     with ftputil.FTPHost(host, user, password) as ftp_host:
@@ -197,6 +244,16 @@ def mirror_ftp_directory(
 
 
 def syncer_download(source, destination):
+    """
+    Download files from the source to the destination using FTP.
+
+    Args:
+        source (str): Source directory path.
+        destination (str): Destination directory path.
+
+    Returns:
+        None
+    """
     # logger.info(f"Downloading {source} to {destination}")
     ftp_config = load_config("config.yaml")["ftp"]
     temp_dir = load_config("config.yaml")["folders"]["temp"]
@@ -214,6 +271,22 @@ def syncer_download(source, destination):
 def print_progress_bar(
     current, max, prefix="", suffix="", decimals=1, length=100, fill="█", print_end="\r"
 ):
+    """
+    Call in a loop to create a terminal progress bar.
+
+    Args:
+        current (int): Current position.
+        max (int): Maximum position.
+        prefix (str): Prefix string.
+        suffix (str): Suffix string.
+        decimals (int): Number of decimals in percent complete.
+        length (int): Character length of the bar.
+        fill (str): Bar fill character.
+        print_end (str): End character (e.g., "\r", "\r\n").
+
+    Returns:
+        None
+    """
     """
     Call in a loop to create terminal progress bar
     @params:
@@ -239,6 +312,15 @@ def print_progress_bar(
 
 
 def set_permissions_and_group(path):
+    """
+    Set permissions and group for a given path.
+
+    Args:
+        path (str): Path to the file or directory.
+
+    Returns:
+        None
+    """
     folder_perms = int(config["folders"]["permissions"]["folders"], 8)
     file_perms = int(config["folders"]["permissions"]["files"], 8)
     group = config["folders"]["permissions"]["group"]
@@ -278,6 +360,12 @@ def set_permissions_and_group(path):
 
 
 def main():
+    """
+    Main function to handle the download and synchronization process.
+
+    Returns:
+        None
+    """
     # Parse command-line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument(
