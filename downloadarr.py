@@ -13,6 +13,9 @@ import grp
 from arrapi import SonarrAPI
 from arrapi import RadarrAPI
 
+global logger
+global config
+
 # TODO: Trigger import after download
 # TODO: Unarchive automatically and remove archives
 # TODO: Webhook for external scripts
@@ -48,24 +51,26 @@ def load_config(file_path):
     with open(file_path, "r") as file:
         return yaml.safe_load(file)
 
+def initialize_logger():
+    """
+    Initialize the logger with the specified configuration.
 
-logger = colorlog.getLogger()
-logger.addHandler(handler)
-config = load_config("config.yaml")
-log_level = config.get("logging", {}).get("severity", "DEBUG").upper()
-logger.setLevel(log_level)
+    Returns:
+        None
+    """
+    global config
+    logger = colorlog.getLogger()
+    logger.addHandler(handler)
+    log_level = config.get("logging", {}).get("severity", "DEBUG").upper()
+    logger.setLevel(log_level)
+    return logger
 
 
-sonarr = SonarrAPI(config["sonarr"]["baseurl"], config["sonarr"]["api_key"])
 
+# sonarr = SonarrAPI(config["sonarr"]["baseurl"], config["sonarr"]["api_key"])
 # pprint(sonarr.send_command("DownloadedEpisodesScan",path="/media/Public/Downloads/Shows/"))
 # pprint(sonarr.all_commands())
 
-# print("-" * 100)
-# radarr = RadarrAPI(config['radarr']['baseurl'], config['radarr']['api_key'])
-# pprint(radarr.send_command("DownloadedMoviesScan",path="/media/Public/Downloads/Movies/Hit.Man.2023.REPACK.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264.HUN.ENG-PTHD/"))
-# pprint(radarr.all_commands())
-# exit(1)
 
 
 def human_readable_size(size, decimal_places=2):
@@ -99,9 +104,6 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
     Returns:
         None
     """
-    """
-    Downloads a file from the FTP server to a temporary location, then moves it to the final destination.
-    """
     padded_name = os.path.basename(remote_path)
     if len(padded_name) > 60:
         padded_name = f"{padded_name[:20]}...{padded_name[-40:]}"
@@ -117,18 +119,25 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
         with ftp_host.open(remote_path, "rb") as remote_file:
             file_size = ftp_host.path.getsize(remote_path)
 
+            # Check if the file size is too big
             if file_size > config["rules"]["max_file_size"]:
                 logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
                 return
+            
+            # Check if the file size is too small
             if file_size < config["rules"]["min_file_size"]:
                 logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
                 return
+            
+            # Check if the file name matches any of the skip regex patterns
             if any(
                 re.match(pattern, remote_path)
                 for pattern in config["rules"]["skip_regex"]
             ):
                 logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
                 return
+            
+            # Check if the file extension is in the skip list
             if any(
                 remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]
             ):
@@ -203,9 +212,6 @@ def mirror_ftp_directory(
     Returns:
         None
     """
-    """
-    Mirrors an FTP directory tree to a local directory via a temporary directory.
-    """
     with ftputil.FTPHost(host, user, password) as ftp_host:
 
         def download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir):
@@ -254,7 +260,6 @@ def syncer_download(source, destination):
     Returns:
         None
     """
-    # logger.info(f"Downloading {source} to {destination}")
     ftp_config = load_config("config.yaml")["ftp"]
     temp_dir = load_config("config.yaml")["folders"]["temp"]
     mirror_ftp_directory(
@@ -286,18 +291,6 @@ def print_progress_bar(
 
     Returns:
         None
-    """
-    """
-    Call in a loop to create terminal progress bar
-    @params:
-        current   - Required  : current position
-        max       - Required  : max position
-        prefix    - Optional  : prefix string
-        suffix    - Optional  : suffix string
-        decimals  - Optional  : positive number of decimals in percent complete
-        length    - Optional  : character length of bar
-        fill      - Optional  : bar fill character
-        print_end - Optional  : end character (e.g. "\r", "\r\n")
     """
     percent = ("{0:." + str(decimals) + "f}").format(100 * current / max)
     filled_length = int(length * current // max)
@@ -366,7 +359,9 @@ def main():
     Returns:
         None
     """
-    # Parse command-line arguments
+    global config
+    global logger
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dry-run",
@@ -379,13 +374,27 @@ def main():
         help="Run the script only once without looping",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
+    parser.add_argument("--skip-extensions", type=str, help="Comma-separated list of file extensions to skip")
+    parser.add_argument("--dont-change-label", action="store_true", help="Don't change the label of the torrents when download completes")
     args = parser.parse_args()
     while True:
-        config = load_config("config.yaml")
+        if os.path.exists(args.config):
+            config = load_config(args.config)
+            logger = initialize_logger()
+        else:
+            logger = initialize_logger()
+            logger.critical(f"Configuration file {args.config} does not exist.")
+            sys.exit(1)
+
+        if args.skip_extensions:
+            skip_extensions_arg = args.skip_extensions.split(',')
+            config["rules"]["skip_extensions"] = skip_extensions_arg
+            logger.info(f"Skip extensions updated to: {skip_extensions_arg}")
 
         completed_label = config["folders"]["completed"]["label"]
         change_label = config["folders"]["completed"].get("change_label", True)
-
+        
         if args.debug:
             logger.setLevel(colorlog.DEBUG)
 
@@ -498,7 +507,7 @@ def main():
                         if not args.dry_run:
                             syncer_download(source_directory, destination)
 
-                            if change_label:
+                            if change_label and not args.dont_change_label:
                                 if "server" in locals():
                                     logger.info(
                                         f"\t= Setting label on {torrent_dict['name']}"
