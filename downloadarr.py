@@ -377,6 +377,9 @@ def main():
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
     parser.add_argument("--skip-extensions", type=str, help="Comma-separated list of file extensions to skip")
     parser.add_argument("--dont-change-label", action="store_true", help="Don't change the label of the torrents when download completes")
+    parser.add_argument("--min-file-size", type=int, help="Minimum file size to download (in bytes)")
+    parser.add_argument("--max-file-size", type=int, help="Maximum file size to download (in bytes)")
+    parser.add_argument("--skip-regex", type=str, help="Comma-separated list of regex patterns to skip")
     args = parser.parse_args()
     while True:
         if os.path.exists(args.config):
@@ -391,6 +394,19 @@ def main():
             skip_extensions_arg = args.skip_extensions.split(',')
             config["rules"]["skip_extensions"] = skip_extensions_arg
             logger.info(f"Skip extensions updated to: {skip_extensions_arg}")
+
+        if args.min_file_size:
+            config["rules"]["min_file_size"] = args.min_file_size
+            logger.info(f"Minimum file size updated to: {args.min_file_size}")
+
+        if args.max_file_size:
+            config["rules"]["max_file_size"] = args.max_file_size
+            logger.info(f"Maximum file size updated to: {args.max_file_size}")
+
+        if args.skip_regex:
+            skip_regex_arg = args.skip_regex.split(',')
+            config["rules"]["skip_regex"] = skip_regex_arg
+            logger.info(f"Skip regex patterns updated to: {skip_regex_arg}")
 
         completed_label = config["folders"]["completed"]["label"]
         change_label = config["folders"]["completed"].get("change_label", True)
