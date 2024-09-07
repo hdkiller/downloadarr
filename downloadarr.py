@@ -384,9 +384,11 @@ def main():
     parser.add_argument("--max-file-size", type=int, help="Maximum file size to download (in bytes)")
     parser.add_argument("--skip-regex", type=str, help="Comma-separated list of regex patterns to skip")
     parser.add_argument("--allow-multiple-instances", action="store_true", help="Allow multiple instances of the script to run")
+    parser.add_argument("--pid-file", type=str, default="/tmp/downloadarr.pid", help="Path to the PID file")
+    parser.add_argument("--pid-file", type=str, default="/tmp/downloadarr.pid", help="Path to the PID file")
     args = parser.parse_args()
 
-    pid_file = "/tmp/downloadarr.pid"
+    pid_file = args.pid_file
 
     if not args.allow_multiple_instances:
         if os.path.exists(pid_file):
