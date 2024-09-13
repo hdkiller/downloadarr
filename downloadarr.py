@@ -51,6 +51,7 @@ def load_config(file_path):
     with open(file_path, "r") as file:
         return yaml.safe_load(file)
 
+
 def initialize_logger():
     """
     Initialize the logger with the specified configuration.
@@ -64,13 +65,6 @@ def initialize_logger():
     log_level = config.get("logging", {}).get("severity", "DEBUG").upper()
     logger.setLevel(log_level)
     return logger
-
-
-
-# sonarr = SonarrAPI(config["sonarr"]["baseurl"], config["sonarr"]["api_key"])
-# pprint(sonarr.send_command("DownloadedEpisodesScan",path="/media/Public/Downloads/Shows/"))
-# pprint(sonarr.all_commands())
-
 
 
 def human_readable_size(size, decimal_places=2):
@@ -123,12 +117,12 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
             if file_size > config["rules"]["max_file_size"]:
                 logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
                 return
-            
+
             # Check if the file size is too small
             if file_size < config["rules"]["min_file_size"]:
                 logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
                 return
-            
+
             # Check if the file name matches any of the skip regex patterns
             if any(
                 re.match(pattern, remote_path)
@@ -136,7 +130,7 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
             ):
                 logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
                 return
-            
+
             # Check if the file extension is in the skip list
             if any(
                 remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]
@@ -385,7 +379,7 @@ def main():
             sys.exit(1)
 
         if args.skip_extensions:
-            skip_extensions_arg = args.skip_extensions.split(',')
+            skip_extensions_arg = args.skip_extensions.split(",")
             config["rules"]["skip_extensions"] = skip_extensions_arg
             logger.info(f"Skip extensions updated to: {skip_extensions_arg}")
 
@@ -398,13 +392,13 @@ def main():
             logger.info(f"Maximum file size updated to: {args.max_file_size}")
 
         if args.skip_regex:
-            skip_regex_arg = args.skip_regex.split(',')
+            skip_regex_arg = args.skip_regex.split(",")
             config["rules"]["skip_regex"] = skip_regex_arg
             logger.info(f"Skip regex patterns updated to: {skip_regex_arg}")
 
         completed_label = config["folders"]["completed"]["label"]
         change_label = config["folders"]["completed"].get("change_label", True)
-        
+
         if args.debug:
             logger.setLevel(colorlog.DEBUG)
 
@@ -553,7 +547,22 @@ def main():
                                             "DownloadedMoviesScan",
                                             path=radarr_import_full_path,
                                         )
-                                        # pprint(radarr.all_commands())
+                                    elif action["name"] == "notify_sonarr":
+                                        sonarr_import_base_path = action[
+                                            "sonarr_import_base_path"
+                                        ]
+                                        sonarr = SonarrAPI(
+                                            config["sonarr"]["baseurl"],
+                                            config["sonarr"]["api_key"],
+                                        )
+                                        sonarr_import_full_path = f"{sonarr_import_base_path}/{torrent_dict['name']}/"
+                                        logger.debug(
+                                            f"\t\t= Importing {sonarr_import_full_path}"
+                                        )
+                                        sonarr.send_command(
+                                            "DownloadedEpisodesScan",
+                                            path=sonarr_import_full_path,
+                                        )
 
         if args.one_shot:
             break
@@ -576,7 +585,6 @@ def main():
 
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dry-run",
@@ -589,18 +597,44 @@ if __name__ == "__main__":
         help="Run the script only once without looping",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
-    parser.add_argument("--skip-extensions", type=str, help="Comma-separated list of file extensions to skip")
-    parser.add_argument("--dont-change-label", action="store_true", help="Don't change the label of the torrents when download completes")
-    parser.add_argument("--min-file-size", type=int, help="Minimum file size to download (in bytes)")
-    parser.add_argument("--max-file-size", type=int, help="Maximum file size to download (in bytes)")
-    parser.add_argument("--skip-regex", type=str, help="Comma-separated list of regex patterns to skip")
-    parser.add_argument("--allow-multiple-instances", action="store_true", default=False, help="Allow multiple instances of the script to run")
-    parser.add_argument("--pid-file", type=str, default="/tmp/downloadarr.pid", help="Path to the PID file")
+    parser.add_argument(
+        "--config", type=str, default="config.yaml", help="Path to the config file"
+    )
+    parser.add_argument(
+        "--skip-extensions",
+        type=str,
+        help="Comma-separated list of file extensions to skip",
+    )
+    parser.add_argument(
+        "--dont-change-label",
+        action="store_true",
+        help="Don't change the label of the torrents when download completes",
+    )
+    parser.add_argument(
+        "--min-file-size", type=int, help="Minimum file size to download (in bytes)"
+    )
+    parser.add_argument(
+        "--max-file-size", type=int, help="Maximum file size to download (in bytes)"
+    )
+    parser.add_argument(
+        "--skip-regex", type=str, help="Comma-separated list of regex patterns to skip"
+    )
+    parser.add_argument(
+        "--allow-multiple-instances",
+        action="store_true",
+        default=False,
+        help="Allow multiple instances of the script to run",
+    )
+    parser.add_argument(
+        "--pid-file",
+        type=str,
+        default="/tmp/downloadarr.pid",
+        help="Path to the PID file",
+    )
     args = parser.parse_args()
 
     pid_file = args.pid_file
-    
+
     try:
         main()
     finally:
