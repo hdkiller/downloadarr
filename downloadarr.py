@@ -84,6 +84,13 @@ def human_readable_size(size, decimal_places=2):
         size /= 1024.0
 
 
+def convert_string_to_bytes(string):
+    if isinstance(string, str):
+        return string.encode("utf-8")
+    else:
+        return string
+
+
 def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=False):
     """
     Download a file from the FTP server to a temporary location, then move it to the final destination.
@@ -110,8 +117,8 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
             os.makedirs(temp_dir_path)
             logger.debug(f"Created directory: {temp_dir_path}")
 
-        with ftp_host.open(remote_path, "rb") as remote_file:
-            file_size = ftp_host.path.getsize(remote_path)
+        with ftp_host.open(convert_string_to_bytes(remote_path), "rb") as remote_file:
+            file_size = ftp_host.path.getsize(convert_string_to_bytes(remote_path))
 
             # Check if the file size is too big
             if file_size > config["rules"]["max_file_size"]:
@@ -207,7 +214,6 @@ def mirror_ftp_directory(
         None
     """
     with ftputil.FTPHost(host, user, password) as ftp_host:
-
         def download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir):
             try:
                 dirs = ftp_host.listdir(remote_dir)
