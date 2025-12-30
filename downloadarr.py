@@ -9,6 +9,7 @@ import re
 import pickle
 import sys
 import grp
+import socket
 
 from arrapi import SonarrAPI
 from arrapi import RadarrAPI
@@ -117,78 +118,90 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
             os.makedirs(temp_dir_path)
             logger.debug(f"Created directory: {temp_dir_path}")
 
-        with ftp_host.open(convert_string_to_bytes(remote_path), "rb") as remote_file:
-            file_size = ftp_host.path.getsize(convert_string_to_bytes(remote_path))
+        try:
+            with ftp_host.open(convert_string_to_bytes(remote_path), "rb") as remote_file:
+                file_size = ftp_host.path.getsize(convert_string_to_bytes(remote_path))
 
-            # Check if the file size is too big
-            if file_size > config["rules"]["max_file_size"]:
-                logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
-                return
+                # Check if the file size is too big
+                if file_size > config["rules"]["max_file_size"]:
+                    logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
+                    return
 
-            # Check if the file size is too small
-            if file_size < config["rules"]["min_file_size"]:
-                logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
-                return
+                # Check if the file size is too small
+                if file_size < config["rules"]["min_file_size"]:
+                    logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
+                    return
 
-            # Check if the file name matches any of the skip regex patterns
-            if any(
-                re.match(pattern, remote_path)
-                for pattern in config["rules"]["skip_regex"]
-            ):
-                logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
-                return
+                # Check if the file name matches any of the skip regex patterns
+                if any(
+                    re.match(pattern, remote_path)
+                    for pattern in config["rules"]["skip_regex"]
+                ):
+                    logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
+                    return
 
-            # Check if the file extension is in the skip list
-            if any(
-                remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]
-            ):
-                logger.warning(f"\t- {padded_name} [SKIPPED: extension]")
-                return
+                # Check if the file extension is in the skip list
+                if any(
+                    remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]
+                ):
+                    logger.warning(f"\t- {padded_name} [SKIPPED: extension]")
+                    return
 
-            logger.info(f"\t+ {padded_name} [OK]")
+                logger.info(f"\t+ {padded_name} [OK]")
 
-            start_time = time.time()
-            with open(temp_path, "wb") as local_file:
-                downloaded = 0
-                block_size = 8192
-                while True:
-                    buffer = remote_file.read(block_size)
-                    if not buffer:
-                        break
-                    downloaded += len(buffer)
-                    local_file.write(buffer)
-                    human_readable_downloaded = human_readable_size(downloaded)
-                    human_readable_file_size = human_readable_size(file_size)
-                    percentage = (downloaded / file_size) * 100
+                start_time = time.time()
+                with open(temp_path, "wb") as local_file:
+                    downloaded = 0
+                    block_size = 8192
+                    while True:
+                        buffer = remote_file.read(block_size)
+                        if not buffer:
+                            break
+                        downloaded += len(buffer)
+                        local_file.write(buffer)
+                        human_readable_downloaded = human_readable_size(downloaded)
+                        human_readable_file_size = human_readable_size(file_size)
+                        percentage = (downloaded / file_size) * 100
 
-                    elapsed_time = time.time() - start_time
-                    if downloaded > 0:
-                        estimated_total_time = (elapsed_time / downloaded) * file_size
-                        eta = estimated_total_time - elapsed_time
-                        human_readable_eta = time.strftime("%H:%M:%S", time.gmtime(eta))
-                    else:
-                        human_readable_eta = "N/A"
+                        elapsed_time = time.time() - start_time
+                        if downloaded > 0:
+                            estimated_total_time = (elapsed_time / downloaded) * file_size
+                            eta = estimated_total_time - elapsed_time
+                            human_readable_eta = time.strftime("%H:%M:%S", time.gmtime(eta))
+                        else:
+                            human_readable_eta = "N/A"
 
-                    status = f"Downloaded {human_readable_downloaded}/{human_readable_file_size} ({percentage:.2f}%) ETA: {human_readable_eta}"
-                    print(f"{status}{' ' * 20}", end="\r", flush=True)
-            # print(f"Rename {temp_path} to {local_path}")
-            print(f"{' ' * 60}", end="\r", flush=True)
-            # Move the file from temp to final location
-            local_dir_path = os.path.dirname(local_path)
-            if not os.path.exists(local_dir_path):
-                os.makedirs(local_dir_path)
-                logger.debug(f"Created directory: {local_dir_path}")
-                set_permissions_and_group(local_dir_path)
+                        status = f"Downloaded {human_readable_downloaded}/{human_readable_file_size} ({percentage:.2f}%) ETA: {human_readable_eta}"
+                        print(f"{status}{' ' * 20}", end="\r", flush=True)
+                # print(f"Rename {temp_path} to {local_path}")
+                print(f"{' ' * 60}", end="\r", flush=True)
+                # Move the file from temp to final location
+                local_dir_path = os.path.dirname(local_path)
+                if not os.path.exists(local_dir_path):
+                    os.makedirs(local_dir_path)
+                    logger.debug(f"Created directory: {local_dir_path}")
+                    set_permissions_and_group(local_dir_path)
 
-            os.rename(temp_path, local_path)
-            logger.debug(f"Moved to: {local_path}")
+                os.rename(temp_path, local_path)
+                logger.debug(f"Moved to: {local_path}")
 
-            # Set permissions and group
-            if config["folders"]["permissions"]["change_permissions"]:
-                logger.debug(f"Setting permissions and group for {local_path}")
-                set_permissions_and_group(local_path)
-            else:
-                logger.debug(f"Skipping setting permissions and group for {local_path}")
+                # Set permissions and group
+                if config["folders"]["permissions"]["change_permissions"]:
+                    logger.debug(f"Setting permissions and group for {local_path}")
+                    set_permissions_and_group(local_path)
+                else:
+                    logger.debug(f"Skipping setting permissions and group for {local_path}")
+        except ftputil.error.FTPIOError as e:
+            print(f"Error downloading {remote_path}: {e}")
+            # Optionally log the error or take other actions
+        except socket.timeout:
+            logger.error(f"Timeout downloading {remote_path}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception as e:
+            logger.error(f"Unexpected error downloading {remote_path}: {e}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
     else:
         logger.debug(f"Already exists: {local_path}")
         set_permissions_and_group(local_path)
@@ -214,6 +227,8 @@ def mirror_ftp_directory(
         None
     """
     with ftputil.FTPHost(host, user, password) as ftp_host:
+        ftp_host.encoding = 'utf-8'
+        # ftp_host.force_mlsd = False
         def download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir):
             try:
                 dirs = ftp_host.listdir(remote_dir)
@@ -402,6 +417,10 @@ def main():
             config["rules"]["skip_regex"] = skip_regex_arg
             logger.info(f"Skip regex patterns updated to: {skip_regex_arg}")
 
+        if "timeout" in config["ftp"]:
+            socket.setdefaulttimeout(config["ftp"]["timeout"])
+            logger.debug(f"Socket timeout set to: {config['ftp']['timeout']}")
+
         completed_label = config["folders"]["completed"]["label"]
         change_label = config["folders"]["completed"].get("change_label", True)
 
@@ -515,60 +534,63 @@ def main():
 
                         # logger.info(f"{source_directory} => {destination}")
                         if not args.dry_run:
-                            syncer_download(source_directory, destination)
+                            try:
+                                syncer_download(source_directory, destination)
 
-                            if change_label and not args.dont_change_label:
-                                if "server" in locals():
-                                    logger.info(
-                                        f"\t= Setting label on {torrent_dict['name']}"
-                                    )
-                                    server.d.custom1.set(
-                                        torrent_dict["id"], completed_label
-                                    )
+                                if change_label and not args.dont_change_label:
+                                    if "server" in locals():
+                                        logger.info(
+                                            f"\t= Setting label on {torrent_dict['name']}"
+                                        )
+                                        server.d.custom1.set(
+                                            torrent_dict["id"], completed_label
+                                        )
+                                    else:
+                                        logger.error(
+                                            "\t= Cannot set label when caching is on"
+                                        )
                                 else:
-                                    logger.error(
-                                        "\t= Cannot set label when caching is on"
-                                    )
-                            else:
-                                logger.warning("\t= Skipping setting label")
+                                    logger.warning("\t= Skipping setting label")
 
-                            if "actions" in label_mapping[torrent_dict["label"]]:
-                                for action in label_mapping[torrent_dict["label"]][
-                                    "actions"
-                                ]:
-                                    logger.info(f"\t= Executing action: {action}")
-                                    if action["name"] == "notify_radarr":
-                                        radarr_import_base_path = action[
-                                            "radarr_import_base_path"
-                                        ]
-                                        radarr = RadarrAPI(
-                                            config["radarr"]["baseurl"],
-                                            config["radarr"]["api_key"],
-                                        )
-                                        radarr_import_full_path = f"{radarr_import_base_path}/{torrent_dict['name']}/"
-                                        logger.debug(
-                                            f"\t\t= Importing {radarr_import_full_path}"
-                                        )
-                                        radarr.send_command(
-                                            "DownloadedMoviesScan",
-                                            path=radarr_import_full_path,
-                                        )
-                                    elif action["name"] == "notify_sonarr":
-                                        sonarr_import_base_path = action[
-                                            "sonarr_import_base_path"
-                                        ]
-                                        sonarr = SonarrAPI(
-                                            config["sonarr"]["baseurl"],
-                                            config["sonarr"]["api_key"],
-                                        )
-                                        sonarr_import_full_path = f"{sonarr_import_base_path}/{torrent_dict['name']}/"
-                                        logger.debug(
-                                            f"\t\t= Importing {sonarr_import_full_path}"
-                                        )
-                                        sonarr.send_command(
-                                            "DownloadedEpisodesScan",
-                                            path=sonarr_import_full_path,
-                                        )
+                                if "actions" in label_mapping[torrent_dict["label"]]:
+                                    for action in label_mapping[torrent_dict["label"]][
+                                        "actions"
+                                    ]:
+                                        logger.info(f"\t= Executing action: {action}")
+                                        if action["name"] == "notify_radarr":
+                                            radarr_import_base_path = action[
+                                                "radarr_import_base_path"
+                                            ]
+                                            radarr = RadarrAPI(
+                                                config["radarr"]["baseurl"],
+                                                config["radarr"]["api_key"],
+                                            )
+                                            radarr_import_full_path = f"{radarr_import_base_path}/{torrent_dict['name']}/"
+                                            logger.debug(
+                                                f"\t\t= Importing {radarr_import_full_path}"
+                                            )
+                                            radarr.send_command(
+                                                "DownloadedMoviesScan",
+                                                path=radarr_import_full_path,
+                                            )
+                                        elif action["name"] == "notify_sonarr":
+                                            sonarr_import_base_path = action[
+                                                "sonarr_import_base_path"
+                                            ]
+                                            sonarr = SonarrAPI(
+                                                config["sonarr"]["baseurl"],
+                                                config["sonarr"]["api_key"],
+                                            )
+                                            sonarr_import_full_path = f"{sonarr_import_base_path}/{torrent_dict['name']}/"
+                                            logger.debug(
+                                                f"\t\t= Importing {sonarr_import_full_path}"
+                                            )
+                                            sonarr.send_command(
+                                                "DownloadedEpisodesScan",
+                                                path=sonarr_import_full_path,
+                                            )
+                            except Exception as e:
+                                logger.error(f"Error processing torrent {torrent_dict['name']}: {e}")
 
         if args.one_shot:
             break
