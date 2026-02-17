@@ -10,6 +10,7 @@ import pickle
 import sys
 import grp
 import socket
+import requests
 
 from arrapi import SonarrAPI
 from arrapi import RadarrAPI
@@ -68,6 +69,38 @@ def initialize_logger():
     return logger
 
 
+def send_telegram_notification(config, message):
+    """
+    Send a notification to Telegram.
+
+    Args:
+        config (dict): Configuration dictionary.
+        message (str): Message to send.
+
+    Returns:
+        None
+    """
+    telegram_config = config.get("notifications", {}).get("telegram")
+    if not telegram_config:
+        return
+
+    token = telegram_config.get("token")
+    chat_id = telegram_config.get("chat_id")
+
+    if not token or not chat_id:
+        logger.warning("Telegram notification enabled but token or chat_id missing.")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = {"chat_id": chat_id, "text": message}
+    try:
+        response = requests.post(url, data=data, timeout=10)
+        response.raise_for_status()
+        logger.info("Telegram notification sent.")
+    except Exception as e:
+        logger.error(f"Failed to send Telegram notification: {e}")
+
+
 def human_readable_size(size, decimal_places=2):
     """
     Convert a size in bytes to a human-readable format.
@@ -95,6 +128,7 @@ def convert_string_to_bytes(string):
 def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=False):
     """
     Download a file from the FTP server to a temporary location, then move it to the final destination.
+    Includes retry logic for timeouts and size verification.
 
     Args:
         ftp_host (ftputil.FTPHost): FTP host object.
@@ -104,7 +138,7 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
         overwrite (bool): Whether to overwrite the existing file.
 
     Returns:
-        None
+        bool: True if downloaded successfully and verified, False otherwise.
     """
     padded_name = os.path.basename(remote_path)
     if len(padded_name) > 60:
@@ -118,94 +152,137 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
             os.makedirs(temp_dir_path)
             logger.debug(f"Created directory: {temp_dir_path}")
 
+        max_retries = config.get("ftp", {}).get("retries", 3)
+        attempt = 0
+        
         try:
-            with ftp_host.open(convert_string_to_bytes(remote_path), "rb") as remote_file:
-                file_size = ftp_host.path.getsize(convert_string_to_bytes(remote_path))
+            # Get remote size once
+            remote_size = ftp_host.path.getsize(convert_string_to_bytes(remote_path))
+            
+            # Rules checks
+            if remote_size > config["rules"]["max_file_size"]:
+                logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
+                return False
+            if remote_size < config["rules"]["min_file_size"]:
+                logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
+                return False
+            if any(re.match(pattern, remote_path) for pattern in config["rules"]["skip_regex"]):
+                logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
+                return False
+            if any(remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]):
+                logger.warning(f"\t- {padded_name} [SKIPPED: extension]")
+                return False
 
-                # Check if the file size is too big
-                if file_size > config["rules"]["max_file_size"]:
-                    logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
-                    return
+            while attempt <= max_retries:
+                try:
+                    rest_offset = 0
+                    if os.path.exists(temp_path):
+                        rest_offset = os.path.getsize(temp_path)
+                    
+                    if rest_offset >= remote_size and remote_size > 0:
+                        logger.debug(f"Temp file already complete: {temp_path}")
+                        break
 
-                # Check if the file size is too small
-                if file_size < config["rules"]["min_file_size"]:
-                    logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
-                    return
-
-                # Check if the file name matches any of the skip regex patterns
-                if any(
-                    re.match(pattern, remote_path)
-                    for pattern in config["rules"]["skip_regex"]
-                ):
-                    logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
-                    return
-
-                # Check if the file extension is in the skip list
-                if any(
-                    remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]
-                ):
-                    logger.warning(f"\t- {padded_name} [SKIPPED: extension]")
-                    return
-
-                logger.info(f"\t+ {padded_name} [OK]")
-
-                start_time = time.time()
-                with open(temp_path, "wb") as local_file:
-                    downloaded = 0
-                    block_size = 8192
-                    while True:
-                        buffer = remote_file.read(block_size)
-                        if not buffer:
-                            break
-                        downloaded += len(buffer)
-                        local_file.write(buffer)
-                        human_readable_downloaded = human_readable_size(downloaded)
-                        human_readable_file_size = human_readable_size(file_size)
-                        percentage = (downloaded / file_size) * 100
-
-                        elapsed_time = time.time() - start_time
-                        if downloaded > 0:
-                            estimated_total_time = (elapsed_time / downloaded) * file_size
-                            eta = estimated_total_time - elapsed_time
-                            human_readable_eta = time.strftime("%H:%M:%S", time.gmtime(eta))
+                    mode = "ab" if rest_offset > 0 else "wb"
+                    if rest_offset > 0:
+                        logger.debug(f"Resuming {remote_path} from {rest_offset} bytes (Attempt {attempt+1}/{max_retries+1})")
+                    
+                    with ftp_host.open(convert_string_to_bytes(remote_path), "rb", rest=rest_offset) as remote_file:
+                        logger.info(f"\t+ {padded_name} [OK] (Attempt {attempt+1})")
+                        start_time = time.time()
+                        with open(temp_path, mode) as local_file:
+                            downloaded = rest_offset
+                            block_size = 8192
+                            while True:
+                                buffer = remote_file.read(block_size)
+                                if not buffer:
+                                    break
+                                downloaded += len(buffer)
+                                local_file.write(buffer)
+                                
+                                # Progress reporting
+                                if downloaded % (block_size * 10) == 0 or downloaded == remote_size:
+                                    percentage = (downloaded / remote_size) * 100
+                                    elapsed_time = time.time() - start_time
+                                    if (downloaded - rest_offset) > 0:
+                                        eta = ((elapsed_time / (downloaded - rest_offset)) * (remote_size - rest_offset)) - elapsed_time
+                                        human_readable_eta = time.strftime("%H:%M:%S", time.gmtime(max(0, eta)))
+                                    else:
+                                        human_readable_eta = "N/A"
+                                    
+                                    status = f"Downloaded {human_readable_size(downloaded)}/{human_readable_size(remote_size)} ({percentage:.2f}%) ETA: {human_readable_eta}"
+                                    print(f"{status}{' ' * 20}", end="\r", flush=True)
+                        
+                        # Check size after download loop
+                        if os.path.getsize(temp_path) == remote_size:
+                            break # Success
                         else:
-                            human_readable_eta = "N/A"
+                            logger.warning(f"Size mismatch after download for {remote_path}. Retrying...")
+                            attempt += 1
 
-                        status = f"Downloaded {human_readable_downloaded}/{human_readable_file_size} ({percentage:.2f}%) ETA: {human_readable_eta}"
-                        print(f"{status}{' ' * 20}", end="\r", flush=True)
-                # print(f"Rename {temp_path} to {local_path}")
-                print(f"{' ' * 60}", end="\r", flush=True)
-                # Move the file from temp to final location
-                local_dir_path = os.path.dirname(local_path)
-                if not os.path.exists(local_dir_path):
-                    os.makedirs(local_dir_path)
-                    logger.debug(f"Created directory: {local_dir_path}")
-                    set_permissions_and_group(local_dir_path)
+                except (ftputil.error.FTPIOError, socket.timeout) as e:
+                    attempt += 1
+                    if attempt <= max_retries:
+                        logger.warning(f"Error downloading {remote_path}: {e}. Retrying in 5s... ({attempt}/{max_retries})")
+                        time.sleep(5)
+                    else:
+                        logger.error(f"Failed to download {remote_path} after {max_retries} retries: {e}")
+                        return False
+                except Exception as e:
+                    logger.error(f"Unexpected error downloading {remote_path}: {e}")
+                    return False
 
-                os.rename(temp_path, local_path)
-                logger.debug(f"Moved to: {local_path}")
+            # Clear progress line
+            print(f"{' ' * 80}", end="\r", flush=True)
 
-                # Set permissions and group
-                if config["folders"]["permissions"]["change_permissions"]:
-                    logger.debug(f"Setting permissions and group for {local_path}")
-                    set_permissions_and_group(local_path)
-                else:
-                    logger.debug(f"Skipping setting permissions and group for {local_path}")
-        except ftputil.error.FTPIOError as e:
-            print(f"Error downloading {remote_path}: {e}")
-            # Optionally log the error or take other actions
-        except socket.timeout:
-            logger.error(f"Timeout downloading {remote_path}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            # Final verification of temp file
+            if os.path.getsize(temp_path) != remote_size:
+                logger.error(f"Final size verification failed for {temp_path}. Expected {remote_size}, got {os.path.getsize(temp_path)}")
+                return False
+
+            # Move to final location
+            local_dir_path = os.path.dirname(local_path)
+            if not os.path.exists(local_dir_path):
+                os.makedirs(local_dir_path)
+                set_permissions_and_group(local_dir_path)
+
+            os.rename(temp_path, local_path)
+            
+            # Post-move size verification
+            if os.path.getsize(local_path) != remote_size:
+                logger.error(f"Post-move verification failed for {local_path}")
+                return False
+
+            # Set permissions
+            if config["folders"]["permissions"]["change_permissions"]:
+                set_permissions_and_group(local_path)
+            
+            return True
+
         except Exception as e:
-            logger.error(f"Unexpected error downloading {remote_path}: {e}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            logger.error(f"Error in download_ftp_file for {remote_path}: {e}")
+            return False
     else:
+        # File exists, but let's verify its size if possible
         logger.debug(f"Already exists: {local_path}")
-        set_permissions_and_group(local_path)
-        logger.info(f"\t+ {padded_name} [EXISTS]")
+        try:
+            remote_size = ftp_host.path.getsize(convert_string_to_bytes(remote_path))
+            local_size = os.path.getsize(local_path)
+            if local_size == remote_size:
+                logger.info(f"\t+ {padded_name} [EXISTS: VERIFIED]")
+                if config["folders"]["permissions"]["change_permissions"]:
+                    set_permissions_and_group(local_path)
+                return True
+            else:
+                logger.warning(f"\t+ {padded_name} [EXISTS: SIZE MISMATCH (Local: {local_size}, Remote: {remote_size})]")
+                if overwrite:
+                    # Recursive call will handle it
+                    pass
+                else:
+                    return False
+        except:
+            logger.info(f"\t+ {padded_name} [EXISTS]")
+            return True
 
 
 def mirror_ftp_directory(
@@ -224,12 +301,13 @@ def mirror_ftp_directory(
         overwrite (bool): Whether to overwrite existing files.
 
     Returns:
-        None
+        bool: True if all files in the tree were downloaded successfully, False otherwise.
     """
     with ftputil.FTPHost(host, user, password) as ftp_host:
         ftp_host.encoding = 'utf-8'
-        # ftp_host.force_mlsd = False
+        
         def download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir):
+            all_success = True
             try:
                 dirs = ftp_host.listdir(remote_dir)
                 logger.debug(f"Found {len(dirs)} items in {remote_dir}")
@@ -248,20 +326,24 @@ def mirror_ftp_directory(
                             os.makedirs(local_path)
                         if not os.path.exists(temp_path):
                             os.makedirs(temp_path)
-                        download_ftp_tree(ftp_host, remote_path, local_dir, temp_dir)
+                        if not download_ftp_tree(ftp_host, remote_path, local_dir, temp_dir):
+                            all_success = False
                     else:
-                        download_ftp_file(
+                        if not download_ftp_file(
                             ftp_host, remote_path, local_path, temp_path, overwrite
-                        )
+                        ):
+                            all_success = False
             else:
-                # print(f"File: {remote_dir}")
                 local_path = os.path.join(local_dir, os.path.basename(remote_dir))
                 temp_path = os.path.join(temp_dir, os.path.basename(remote_dir))
-                download_ftp_file(
+                if not download_ftp_file(
                     ftp_host, remote_dir, local_path, temp_path, overwrite
-                )
+                ):
+                    all_success = False
+            
+            return all_success
 
-        download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir)
+        return download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir)
 
 
 def syncer_download(source, destination):
@@ -273,11 +355,11 @@ def syncer_download(source, destination):
         destination (str): Destination directory path.
 
     Returns:
-        None
+        bool: True if download was successful, False otherwise.
     """
     ftp_config = load_config("config.yaml")["ftp"]
     temp_dir = load_config("config.yaml")["folders"]["temp"]
-    mirror_ftp_directory(
+    success = mirror_ftp_directory(
         ftp_config["host"],
         ftp_config["user"],
         ftp_config["pass"],
@@ -285,7 +367,9 @@ def syncer_download(source, destination):
         destination,
         temp_dir,
     )
-    set_permissions_and_group(destination)
+    if success and os.path.exists(destination):
+        set_permissions_and_group(destination)
+    return success
 
 
 def print_progress_bar(
@@ -535,60 +619,67 @@ def main():
                         # logger.info(f"{source_directory} => {destination}")
                         if not args.dry_run:
                             try:
-                                syncer_download(source_directory, destination)
+                                download_success = syncer_download(source_directory, destination)
 
-                                if change_label and not args.dont_change_label:
-                                    if "server" in locals():
-                                        logger.info(
-                                            f"\t= Setting label on {torrent_dict['name']}"
-                                        )
-                                        server.d.custom1.set(
-                                            torrent_dict["id"], completed_label
-                                        )
-                                    else:
-                                        logger.error(
-                                            "\t= Cannot set label when caching is on"
-                                        )
+                                if not download_success:
+                                    logger.error(f"Download failed or incomplete for {torrent_dict['name']}, skipping label update and actions")
                                 else:
-                                    logger.warning("\t= Skipping setting label")
+                                    # Send Telegram notification
+                                    message = f"[{torrent_dict['label']}] {torrent_dict['name']}"
+                                    send_telegram_notification(config, message)
 
-                                if "actions" in label_mapping[torrent_dict["label"]]:
-                                    for action in label_mapping[torrent_dict["label"]][
-                                        "actions"
-                                    ]:
-                                        logger.info(f"\t= Executing action: {action}")
-                                        if action["name"] == "notify_radarr":
-                                            radarr_import_base_path = action[
-                                                "radarr_import_base_path"
-                                            ]
-                                            radarr = RadarrAPI(
-                                                config["radarr"]["baseurl"],
-                                                config["radarr"]["api_key"],
+                                    if change_label and not args.dont_change_label:
+                                        if "server" in locals():
+                                            logger.info(
+                                                f"\t= Setting label on {torrent_dict['name']}"
                                             )
-                                            radarr_import_full_path = f"{radarr_import_base_path}/{torrent_dict['name']}/"
-                                            logger.debug(
-                                                f"\t\t= Importing {radarr_import_full_path}"
+                                            server.d.custom1.set(
+                                                torrent_dict["id"], completed_label
                                             )
-                                            radarr.send_command(
-                                                "DownloadedMoviesScan",
-                                                path=radarr_import_full_path,
+                                        else:
+                                            logger.error(
+                                                "\t= Cannot set label when caching is on"
                                             )
-                                        elif action["name"] == "notify_sonarr":
-                                            sonarr_import_base_path = action[
-                                                "sonarr_import_base_path"
-                                            ]
-                                            sonarr = SonarrAPI(
-                                                config["sonarr"]["baseurl"],
-                                                config["sonarr"]["api_key"],
-                                            )
-                                            sonarr_import_full_path = f"{sonarr_import_base_path}/{torrent_dict['name']}/"
-                                            logger.debug(
-                                                f"\t\t= Importing {sonarr_import_full_path}"
-                                            )
-                                            sonarr.send_command(
-                                                "DownloadedEpisodesScan",
-                                                path=sonarr_import_full_path,
-                                            )
+                                    else:
+                                        logger.warning("\t= Skipping setting label")
+
+                                    if "actions" in label_mapping[torrent_dict["label"]]:
+                                        for action in label_mapping[torrent_dict["label"]][
+                                            "actions"
+                                        ]:
+                                            logger.info(f"\t= Executing action: {action}")
+                                            if action["name"] == "notify_radarr":
+                                                radarr_import_base_path = action[
+                                                    "radarr_import_base_path"
+                                                ]
+                                                radarr = RadarrAPI(
+                                                    config["radarr"]["baseurl"],
+                                                    config["radarr"]["api_key"],
+                                                )
+                                                radarr_import_full_path = f"{radarr_import_base_path}/{torrent_dict['name']}/"
+                                                logger.debug(
+                                                    f"\t\t= Importing {radarr_import_full_path}"
+                                                )
+                                                radarr.send_command(
+                                                    "DownloadedMoviesScan",
+                                                    path=radarr_import_full_path,
+                                                )
+                                            elif action["name"] == "notify_sonarr":
+                                                sonarr_import_base_path = action[
+                                                    "sonarr_import_base_path"
+                                                ]
+                                                sonarr = SonarrAPI(
+                                                    config["sonarr"]["baseurl"],
+                                                    config["sonarr"]["api_key"],
+                                                )
+                                                sonarr_import_full_path = f"{sonarr_import_base_path}/{torrent_dict['name']}/"
+                                                logger.debug(
+                                                    f"\t\t= Importing {sonarr_import_full_path}"
+                                                )
+                                                sonarr.send_command(
+                                                    "DownloadedEpisodesScan",
+                                                    path=sonarr_import_full_path,
+                                                )
                             except Exception as e:
                                 logger.error(f"Error processing torrent {torrent_dict['name']}: {e}")
 
