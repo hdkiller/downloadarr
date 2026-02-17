@@ -1,0 +1,73 @@
+logging:
+  severity: INFO
+
+ftp:
+  host: "ftp.example.com"
+  user: "ftpuser"
+  pass: "ftppassword"
+  retries: 3
+  timeout: 60
+
+rtorrent:
+  host: "rtorrent.example.com"
+  port: 443
+  user: "rtuser"
+  pass: "rtpassword"
+  path: "/plugins/rpc/rpc.php"
+  recheck_time: 120
+  allow_xmlrpc_cache: false
+
+folders:
+  root: "/app/Downloads"
+  temp: "/app/Incomplete_Downloads"
+  completed:
+    label: "completed"
+    change_label: true
+  permissions:
+    change_permissions: true
+    folders: "0775"
+    files: "0664"
+    group: "users"
+  label_mapping:
+    movies:
+      path: "Movies"
+      options:
+        priority: 1
+      actions:
+        - name: notify_radarr
+          radarr_import_base_path: "/data/Movies"
+    tv:
+      path: "TV"
+      options:
+        priority: 2
+      actions:
+        - name: notify_sonarr
+          sonarr_import_base_path: "/data/TV"
+    books:
+      path: "Books"
+      options:
+        priority: 3
+
+radarr:
+  baseurl: "http://radarr:7878"
+  api_key: "your-radarr-api-key"
+
+sonarr:
+  baseurl: "http://sonarr:8989"
+  api_key: "your-sonarr-api-key"
+
+notifications:
+  telegram:
+    token: "your-telegram-bot-token"
+    chat_id: "your-telegram-chat-id"
+
+rules:
+  max_file_size: 107374182400 # 100 GB in bytes
+  min_file_size: 1048576       # 1 MB in bytes
+  skip_regex:
+    - ".*\.sample.*"
+    - ".*\.nfo"
+  skip_extensions:
+    - ".nfo"
+    - ".txt"
+    - ".jpg"
