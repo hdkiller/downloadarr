@@ -162,16 +162,20 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
             # Rules checks
             if remote_size > config["rules"]["max_file_size"]:
                 logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
-                return False
+                return True
             if remote_size < config["rules"]["min_file_size"]:
                 logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
-                return False
-            if any(re.match(pattern, remote_path) for pattern in config["rules"]["skip_regex"]):
+                return True
+            if any(
+                re.match(pattern, remote_path) for pattern in config["rules"]["skip_regex"]
+            ):
                 logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
-                return False
-            if any(remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]):
+                return True
+            if any(
+                remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]
+            ):
                 logger.warning(f"\t- {padded_name} [SKIPPED: extension]")
-                return False
+                return True
 
             while attempt <= max_retries:
                 try:
