@@ -5,6 +5,7 @@ ftp:
   host: "ftp.example.com"
   user: "ftpuser"
   pass: "ftppassword"
+  encoding: "utf-8"  # Use for non-ASCII paths (e.g. Á, ũ)
   retries: 3
   timeout: 60
 
