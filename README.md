@@ -53,7 +53,7 @@ python3 downloadarr.py
 
 The `config.yaml` file is the heart of Downloadarr. Key sections include:
 
-- **ftp**: Connection details for your FTP server.
+- **ftp**: Connection details for your FTP server (`encoding: utf-8` is recommended for non-ASCII paths).
 - **rtorrent**: XMLRPC connection details for rTorrent.
 - **folders**: Define your local root, temporary download path, and permission settings.
 - **label_mapping**: Map rTorrent labels to local subdirectories and define post-download actions.
@@ -96,6 +96,15 @@ Currently supported actions in `label_mapping`:
 
 - `notify_radarr`: Triggers a "DownloadedMoviesScan" in Radarr.
 - `notify_sonarr`: Triggers a "DownloadedEpisodesScan" in Sonarr.
+
+## Testing
+
+Install dev dependencies and run the test suite:
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
 
 ## License
 

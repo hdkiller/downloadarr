@@ -11,6 +11,9 @@ import sys
 import grp
 import socket
 import requests
+import unicodedata
+from dataclasses import dataclass
+from enum import Enum
 
 from arrapi import SonarrAPI
 from arrapi import RadarrAPI
@@ -39,6 +42,73 @@ handler.setFormatter(
     )
 )
 
+class FileTransferResult(Enum):
+    DOWNLOADED = "downloaded"
+    SKIPPED = "skipped"
+    EXISTS = "exists"
+    FAILED = "failed"
+
+
+@dataclass
+class MirrorStats:
+    downloaded: int = 0
+    skipped: int = 0
+    exists: int = 0
+    failed: int = 0
+
+    @property
+    def success(self) -> bool:
+        return self.failed == 0
+
+    @property
+    def has_content(self) -> bool:
+        return self.downloaded > 0 or self.exists > 0
+
+    def record(self, result: FileTransferResult) -> None:
+        if result == FileTransferResult.DOWNLOADED:
+            self.downloaded += 1
+        elif result == FileTransferResult.SKIPPED:
+            self.skipped += 1
+        elif result == FileTransferResult.EXISTS:
+            self.exists += 1
+        elif result == FileTransferResult.FAILED:
+            self.failed += 1
+
+
+def ensure_unicode_path(path, encoding="utf-8"):
+    if path is None:
+        return ""
+    if isinstance(path, bytes):
+        path = path.decode(encoding, errors="replace")
+    elif not isinstance(path, str):
+        path = str(path)
+    return unicodedata.normalize("NFC", path)
+
+
+def resolve_torrent_source_directory(torrent_directory, torrent_name):
+    directory = ensure_unicode_path(torrent_directory).rstrip("/")
+    name = ensure_unicode_path(torrent_name)
+    if os.path.basename(directory) == name:
+        return directory
+    return f"{directory}/{name}"
+
+
+def build_rtorrent_server_url(rtorrent_config):
+    return (
+        f"https://{rtorrent_config['user']}:{rtorrent_config['pass']}"
+        f"@{rtorrent_config['host']}:{rtorrent_config['port']}{rtorrent_config['path']}"
+    )
+
+
+def connect_rtorrent_server(rtorrent_config):
+    return xmlrpc.client.Server(build_rtorrent_server_url(rtorrent_config))
+
+
+def get_ftp_encoding(cfg=None):
+    cfg = cfg if cfg is not None else config
+    return cfg.get("ftp", {}).get("encoding", "utf-8")
+
+
 
 def load_config(file_path):
     """
@@ -50,7 +120,7 @@ def load_config(file_path):
     Returns:
         dict: Configuration data.
     """
-    with open(file_path, "r") as file:
+    with open(file_path, "r", encoding="utf-8") as file:
         return yaml.safe_load(file)
 
 
@@ -116,13 +186,7 @@ def human_readable_size(size, decimal_places=2):
         if size < 1024.0:
             return f"{size:.{decimal_places}f} {unit}"
         size /= 1024.0
-
-
-def convert_string_to_bytes(string):
-    if isinstance(string, str):
-        return string.encode("utf-8")
-    else:
-        return string
+    return f"{size:.{decimal_places}f} PB"
 
 
 def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=False):
@@ -138,8 +202,13 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
         overwrite (bool): Whether to overwrite the existing file.
 
     Returns:
-        bool: True if downloaded successfully and verified, False otherwise.
+        FileTransferResult: Outcome of the transfer attempt.
     """
+    encoding = get_ftp_encoding()
+    remote_path = ensure_unicode_path(remote_path, encoding)
+    local_path = ensure_unicode_path(local_path, encoding)
+    temp_path = ensure_unicode_path(temp_path, encoding)
+
     padded_name = os.path.basename(remote_path)
     if len(padded_name) > 60:
         padded_name = f"{padded_name[:20]}...{padded_name[-40:]}"
@@ -157,25 +226,25 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
         
         try:
             # Get remote size once
-            remote_size = ftp_host.path.getsize(convert_string_to_bytes(remote_path))
+            remote_size = ftp_host.path.getsize(remote_path)
             
             # Rules checks
             if remote_size > config["rules"]["max_file_size"]:
                 logger.warning(f"\t- {padded_name} [SKIPPED: too big]")
-                return True
+                return FileTransferResult.SKIPPED
             if remote_size < config["rules"]["min_file_size"]:
                 logger.warning(f"\t- {padded_name} [SKIPPED: too small]")
-                return True
+                return FileTransferResult.SKIPPED
             if any(
-                re.match(pattern, remote_path) for pattern in config["rules"]["skip_regex"]
+                re.search(pattern, remote_path) for pattern in config["rules"]["skip_regex"]
             ):
                 logger.warning(f"\t- {padded_name} [SKIPPED: regex]")
-                return True
+                return FileTransferResult.SKIPPED
             if any(
                 remote_path.endswith(ext) for ext in config["rules"]["skip_extensions"]
             ):
                 logger.warning(f"\t- {padded_name} [SKIPPED: extension]")
-                return True
+                return FileTransferResult.SKIPPED
 
             while attempt <= max_retries:
                 try:
@@ -183,6 +252,11 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
                     if os.path.exists(temp_path):
                         rest_offset = os.path.getsize(temp_path)
                     
+                    if remote_size == 0:
+                        open(temp_path, "wb").close()
+                        logger.debug(f"Created empty file: {temp_path}")
+                        break
+
                     if rest_offset >= remote_size and remote_size > 0:
                         logger.debug(f"Temp file already complete: {temp_path}")
                         break
@@ -191,7 +265,7 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
                     if rest_offset > 0:
                         logger.debug(f"Resuming {remote_path} from {rest_offset} bytes (Attempt {attempt+1}/{max_retries+1})")
                     
-                    with ftp_host.open(convert_string_to_bytes(remote_path), "rb", rest=rest_offset) as remote_file:
+                    with ftp_host.open(remote_path, "rb", rest=rest_offset) as remote_file:
                         logger.info(f"\t+ {padded_name} [OK] (Attempt {attempt+1})")
                         start_time = time.time()
                         with open(temp_path, mode) as local_file:
@@ -205,7 +279,10 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
                                 local_file.write(buffer)
                                 
                                 # Progress reporting
-                                if downloaded % (block_size * 10) == 0 or downloaded == remote_size:
+                                if remote_size > 0 and (
+                                    downloaded % (block_size * 10) == 0
+                                    or downloaded == remote_size
+                                ):
                                     percentage = (downloaded / remote_size) * 100
                                     elapsed_time = time.time() - start_time
                                     if (downloaded - rest_offset) > 0:
@@ -231,10 +308,10 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
                         time.sleep(5)
                     else:
                         logger.error(f"Failed to download {remote_path} after {max_retries} retries: {e}")
-                        return False
+                        return FileTransferResult.FAILED
                 except Exception as e:
                     logger.error(f"Unexpected error downloading {remote_path}: {e}")
-                    return False
+                    return FileTransferResult.FAILED
 
             # Clear progress line
             print(f"{' ' * 80}", end="\r", flush=True)
@@ -242,7 +319,7 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
             # Final verification of temp file
             if os.path.getsize(temp_path) != remote_size:
                 logger.error(f"Final size verification failed for {temp_path}. Expected {remote_size}, got {os.path.getsize(temp_path)}")
-                return False
+                return FileTransferResult.FAILED
 
             # Move to final location
             local_dir_path = os.path.dirname(local_path)
@@ -255,38 +332,47 @@ def download_ftp_file(ftp_host, remote_path, local_path, temp_path, overwrite=Fa
             # Post-move size verification
             if os.path.getsize(local_path) != remote_size:
                 logger.error(f"Post-move verification failed for {local_path}")
-                return False
+                return FileTransferResult.FAILED
 
             # Set permissions
             if config["folders"]["permissions"]["change_permissions"]:
                 set_permissions_and_group(local_path)
             
-            return True
+            return FileTransferResult.DOWNLOADED
 
         except Exception as e:
             logger.error(f"Error in download_ftp_file for {remote_path}: {e}")
-            return False
+            return FileTransferResult.FAILED
     else:
         # File exists, but let's verify its size if possible
         logger.debug(f"Already exists: {local_path}")
         try:
-            remote_size = ftp_host.path.getsize(convert_string_to_bytes(remote_path))
+            remote_size = ftp_host.path.getsize(remote_path)
             local_size = os.path.getsize(local_path)
             if local_size == remote_size:
                 logger.info(f"\t+ {padded_name} [EXISTS: VERIFIED]")
                 if config["folders"]["permissions"]["change_permissions"]:
                     set_permissions_and_group(local_path)
-                return True
-            else:
-                logger.warning(f"\t+ {padded_name} [EXISTS: SIZE MISMATCH (Local: {local_size}, Remote: {remote_size})]")
-                if overwrite:
-                    # Recursive call will handle it
-                    pass
-                else:
-                    return False
-        except:
-            logger.info(f"\t+ {padded_name} [EXISTS]")
-            return True
+                return FileTransferResult.EXISTS
+            logger.warning(
+                f"\t+ {padded_name} [EXISTS: SIZE MISMATCH "
+                f"(Local: {local_size}, Remote: {remote_size})]"
+            )
+            if overwrite:
+                try:
+                    os.remove(local_path)
+                except OSError as e:
+                    logger.error(f"Could not remove {local_path} for overwrite: {e}")
+                    return FileTransferResult.FAILED
+                return download_ftp_file(
+                    ftp_host, remote_path, local_path, temp_path, overwrite=True
+                )
+            return FileTransferResult.FAILED
+        except (OSError, ftputil.error.FTPIOError) as e:
+            logger.warning(
+                f"Could not verify existing file {local_path} against remote: {e}"
+            )
+            return FileTransferResult.FAILED
 
 
 def mirror_ftp_directory(
@@ -305,47 +391,52 @@ def mirror_ftp_directory(
         overwrite (bool): Whether to overwrite existing files.
 
     Returns:
-        bool: True if all files in the tree were downloaded successfully, False otherwise.
+        MirrorStats: Aggregated transfer results for the tree.
     """
-    with ftputil.FTPHost(host, user, password) as ftp_host:
-        ftp_host.encoding = 'utf-8'
-        
+    encoding = get_ftp_encoding()
+    remote_dir = ensure_unicode_path(remote_dir, encoding)
+    local_dir = ensure_unicode_path(local_dir, encoding)
+    temp_dir = ensure_unicode_path(temp_dir, encoding)
+    stats = MirrorStats()
+
+    with ftputil.FTPHost(host, user, password, encoding=encoding) as ftp_host:
         def download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir):
-            all_success = True
             try:
-                dirs = ftp_host.listdir(remote_dir)
-                logger.debug(f"Found {len(dirs)} items in {remote_dir}")
+                ftp_host.listdir(remote_dir)
+                logger.debug(f"Scanning directory {remote_dir}")
                 is_directory = True
             except ftputil.error.PermanentError:
                 is_directory = False
 
             if is_directory:
                 for item in ftp_host.listdir(remote_dir):
+                    item = ensure_unicode_path(item, encoding)
                     remote_path = ftp_host.path.join(remote_dir, item)
                     local_path = os.path.join(local_dir, item)
                     temp_path = os.path.join(temp_dir, item)
 
                     if ftp_host.path.isdir(remote_path):
-                        if not os.path.exists(local_path):
-                            os.makedirs(local_path)
-                        if not os.path.exists(temp_path):
-                            os.makedirs(temp_path)
-                        if not download_ftp_tree(ftp_host, remote_path, local_dir, temp_dir):
-                            all_success = False
+                        os.makedirs(local_path, exist_ok=True)
+                        os.makedirs(temp_path, exist_ok=True)
+                        download_ftp_tree(
+                            ftp_host, remote_path, local_path, temp_path
+                        )
                     else:
-                        if not download_ftp_file(
-                            ftp_host, remote_path, local_path, temp_path, overwrite
-                        ):
-                            all_success = False
+                        stats.record(
+                            download_ftp_file(
+                                ftp_host, remote_path, local_path, temp_path, overwrite
+                            )
+                        )
             else:
                 local_path = os.path.join(local_dir, os.path.basename(remote_dir))
                 temp_path = os.path.join(temp_dir, os.path.basename(remote_dir))
-                if not download_ftp_file(
-                    ftp_host, remote_dir, local_path, temp_path, overwrite
-                ):
-                    all_success = False
-            
-            return all_success
+                stats.record(
+                    download_ftp_file(
+                        ftp_host, remote_dir, local_path, temp_path, overwrite
+                    )
+                )
+
+            return stats
 
         return download_ftp_tree(ftp_host, remote_dir, local_dir, temp_dir)
 
@@ -359,11 +450,11 @@ def syncer_download(source, destination):
         destination (str): Destination directory path.
 
     Returns:
-        bool: True if download was successful, False otherwise.
+        MirrorStats: Aggregated transfer results.
     """
-    ftp_config = load_config("config.yaml")["ftp"]
-    temp_dir = load_config("config.yaml")["folders"]["temp"]
-    success = mirror_ftp_directory(
+    ftp_config = config["ftp"]
+    temp_dir = config["folders"]["temp"]
+    stats = mirror_ftp_directory(
         ftp_config["host"],
         ftp_config["user"],
         ftp_config["pass"],
@@ -371,9 +462,9 @@ def syncer_download(source, destination):
         destination,
         temp_dir,
     )
-    if success and os.path.exists(destination):
+    if stats.success and os.path.exists(destination):
         set_permissions_and_group(destination)
-    return success
+    return stats
 
 
 def print_progress_bar(
@@ -395,6 +486,8 @@ def print_progress_bar(
     Returns:
         None
     """
+    if max <= 0:
+        return
     percent = ("{0:." + str(decimals) + "f}").format(100 * current / max)
     filled_length = int(length * current // max)
     bar = fill * filled_length + "-" * (length - filled_length)
@@ -522,8 +615,7 @@ def main():
         # labels = config['folders']['labels']
 
         # Create an object to represent our server. Use the login information in the XMLRPC Login Details section here.
-        server_url = f"https://{rtorrent_config['user']}:{rtorrent_config['pass']}@{rtorrent_config['host']}:{rtorrent_config['port']}{rtorrent_config['path']}"
-
+        server_url = build_rtorrent_server_url(rtorrent_config)
         logger.info(
             "Connecting to {}".format(
                 server_url.replace(rtorrent_config["pass"], "***")
@@ -531,8 +623,10 @@ def main():
         )
 
         allow_xmlrpc_cache = config["rtorrent"].get("allow_xmlrpc_cache", False)
-
         cache_file = "torrents_cache.pkl"
+        server = None
+        rpc_failed = False
+        torrents = []
 
         if allow_xmlrpc_cache:
             try:
@@ -541,39 +635,48 @@ def main():
                 logger.warning(f"Loaded {len(torrents)} torrents from cache")
             except (FileNotFoundError, EOFError):
                 torrents = []
-        else:
-            torrents = []
 
         if len(torrents) == 0:
             try:
-                server = xmlrpc.client.Server(server_url)
+                server = connect_rtorrent_server(rtorrent_config)
                 mainview = server.download_list("", "main")
                 logger.info(f"Found {len(mainview)} torrents")
 
                 torrents = []
-
                 for torrent in mainview:
-                    torrent_dict = {}
-                    # print(f"Processing {torrent}")
                     print(".", end="", flush=True)
-                    torrent_dict["id"] = torrent
-                    torrent_dict["name"] = server.d.name(torrent)
-                    torrent_dict["label"] = server.d.custom1(torrent)
-                    torrent_dict["is_completed"] = server.d.complete(torrent)
-                    torrent_dict["directory"] = server.d.directory(torrent)
-                    torrent_dict["hash"] = server.d.hash(torrent)
-
-                    torrents.append(torrent_dict)
+                    torrents.append(
+                        {
+                            "id": torrent,
+                            "name": ensure_unicode_path(server.d.name(torrent)),
+                            "label": ensure_unicode_path(server.d.custom1(torrent)),
+                            "is_completed": server.d.complete(torrent),
+                            "directory": ensure_unicode_path(
+                                server.d.directory(torrent)
+                            ),
+                            "hash": server.d.hash(torrent),
+                        }
+                    )
 
                 if allow_xmlrpc_cache:
                     with open(cache_file, "wb") as f:
                         pickle.dump(torrents, f)
                     logger.info(f"Saved {len(torrents)} torrents to cache")
-                print("\r" + " " * 100, end="\r")  # Clear the line
+                print("\r" + " " * 100, end="\r")
             except Exception as e:
+                rpc_failed = True
+                torrents = []
                 logger.error(
                     f"An error occurred while connecting to the XMLRPC server: {e}"
                 )
+
+        if rpc_failed:
+            recheck_time = config["rtorrent"].get("recheck_time", 120)
+            logger.warning(f"Skipping this cycle; retrying in {recheck_time}s")
+            if args.one_shot:
+                break
+            time.sleep(recheck_time)
+            continue
 
         # Sort torrents by label
         torrents.sort(key=lambda x: x["label"])
@@ -612,37 +715,53 @@ def main():
                         logger.info(
                             f"=> {torrent_dict['name']} ({torrent_dict['label']})"
                         )
-                        is_dir = torrent_dict["name"] in torrent_dict["directory"]
-                        if is_dir is False:
-                            source_directory = (
-                                torrent_dict["directory"] + "/" + torrent_dict["name"]
-                            )
-                        else:
-                            source_directory = torrent_dict["directory"]
+                        source_directory = resolve_torrent_source_directory(
+                            torrent_dict["directory"], torrent_dict["name"]
+                        )
 
-                        # logger.info(f"{source_directory} => {destination}")
                         if not args.dry_run:
                             try:
-                                download_success = syncer_download(source_directory, destination)
+                                mirror_stats = syncer_download(
+                                    source_directory, destination
+                                )
 
-                                if not download_success:
-                                    logger.error(f"Download failed or incomplete for {torrent_dict['name']}, skipping label update and actions")
+                                if not mirror_stats.success:
+                                    logger.error(
+                                        f"Download failed or incomplete for "
+                                        f"{torrent_dict['name']}, skipping label update "
+                                        f"and actions"
+                                    )
+                                elif not mirror_stats.has_content:
+                                    logger.warning(
+                                        f"No files transferred for {torrent_dict['name']} "
+                                        f"(downloaded={mirror_stats.downloaded}, "
+                                        f"exists={mirror_stats.exists}, "
+                                        f"skipped={mirror_stats.skipped}), "
+                                        f"skipping label update and actions"
+                                    )
                                 else:
-                                    # Send Telegram notification
-                                    message = f"[{torrent_dict['label']}] {torrent_dict['name']}"
+                                    message = (
+                                        f"[{torrent_dict['label']}] {torrent_dict['name']}"
+                                    )
                                     send_telegram_notification(config, message)
 
                                     if change_label and not args.dont_change_label:
-                                        if "server" in locals():
+                                        try:
+                                            if server is None:
+                                                server = connect_rtorrent_server(
+                                                    rtorrent_config
+                                                )
                                             logger.info(
-                                                f"\t= Setting label on {torrent_dict['name']}"
+                                                f"\t= Setting label on "
+                                                f"{torrent_dict['name']}"
                                             )
                                             server.d.custom1.set(
                                                 torrent_dict["id"], completed_label
                                             )
-                                        else:
+                                        except Exception as e:
                                             logger.error(
-                                                "\t= Cannot set label when caching is on"
+                                                f"\t= Failed to set label on "
+                                                f"{torrent_dict['name']}: {e}"
                                             )
                                     else:
                                         logger.warning("\t= Skipping setting label")
